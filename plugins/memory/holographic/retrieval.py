@@ -513,14 +513,36 @@ class FactRetriever:
 
         Uses the store's database connection directly for FTS5 MATCH
         with rank scoring. Normalizes FTS5 rank to [0, 1] range.
+
+        Tokenizes the query and uses OR semantics so that facts matching
+        ANY of the query terms are returned (wider recall), not just those
+        matching ALL terms (AND — the FTS5 default).
+
+        Tokens containing FTS5-special characters (parentheses, quotes,
+        operators) are sanitized to avoid silent MATCH failures.
         """
         conn = self.store._conn
+
+        # Tokenize query, sanitize each token for FTS5 safety
+        raw_tokens = self._tokenize(query)
+        safe_tokens = []
+        for tok in raw_tokens:
+            # Strip FTS5-reserved characters: ( ) " - ^ ~ / +
+            clean = tok.translate(str.maketrans("", "", '"()-~^/+'))
+            if clean:
+                safe_tokens.append(clean)
+
+        if safe_tokens:
+            fts_query = " OR ".join(safe_tokens)
+        else:
+            # If sanitization ate everything, try the raw query (let FTS5 handle it)
+            fts_query = query
 
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(fts_query)
 
         if category:
             where_clauses.append("f.category = ?")
@@ -550,17 +572,16 @@ class FactRetriever:
         if not rows:
             return []
 
-        # Normalize FTS5 rank: rank is negative, lower = better
-        # Convert to positive score in [0, 1] range
-        raw_ranks = [abs(row["fts_rank_raw"]) for row in rows]
-        max_rank = max(raw_ranks) if raw_ranks else 1.0
-        max_rank = max(max_rank, 1e-6)  # avoid div by zero
-
+        # Normalize FTS5 rank: rows are already sorted by rank ASC (best first),
+        # so we use position-based ranking instead of raw rank values, which
+        # can vary in sign across SQLite versions.
+        # First (best) result → 1.0, last result → 1/n.
         results = []
-        for row, raw_rank in zip(rows, raw_ranks):
+        n = len(rows)
+        for i, row in enumerate(rows):
             fact = dict(row)
             fact.pop("fts_rank_raw", None)
-            fact["fts_rank"] = raw_rank / max_rank  # normalize to [0, 1]
+            fact["fts_rank"] = (n - i) / n
             results.append(fact)
 
         return results

@@ -460,11 +460,13 @@ class MemoryStore:
             _add(m.group(1))
 
         for m in _RE_ACRONYM.finditer(text):
-            _add(m.group(1))
+            word = m.group(1)
+            if word not in _ACRONYM_STOPS:
+                _add(word)
 
         for m in _RE_CAPITALIZED_SINGLE.finditer(text):
             word = m.group(1)
-            if word not in _STOPS:
+            if word not in _STOPS and word.upper() not in _ACRONYM_STOPS:
                 _add(word)
 
         for m in _RE_DOUBLE_QUOTE.finditer(text):

@@ -138,12 +138,12 @@ def encode_fact(content: str, entities: list[str], dim: int = 1024) -> "np.ndarr
     Role vectors are reserved atoms: "__hrr_role_content__", "__hrr_role_entity__"
 
     Components:
-    1. bind(encode_text(content, dim), encode_atom("__hrr_role_content__", dim))
-    2. For each entity: bind(encode_atom(entity.lower(), dim), encode_atom("__hrr_role_entity__", dim))
+    1. bind(encode_text(content, dim), ROLE_CONTENT)
+    2. For each entity: bind(encode_atom(entity.lower(), dim), ROLE_ENTITY)
     3. bundle all components together
 
     This enables algebraic extraction:
-        unbind(fact, bind(entity, ROLE_ENTITY)) ≈ content_vector
+        unbind(fact, ROLE_CONTENT) ≈ content_vector
     """
     _require_numpy()
 
