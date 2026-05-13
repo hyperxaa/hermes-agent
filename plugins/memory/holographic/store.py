@@ -82,10 +82,46 @@ _TRUST_MIN       =  0.0
 _TRUST_MAX       =  1.0
 
 # Entity extraction patterns
-_RE_CAPITALIZED  = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')
+# 1. Multi-word capitalized phrases (e.g. "John Doe", "Oracle Cloud")
+_RE_CAPITALIZED_MULTI = re.compile(r'\b([A-Z][a-z]{2,15}(?:\s+[A-Z][a-z]{2,15}){1,3})\b')
+# 2. Acronyms / ALL-CAPS technical terms (e.g. OCI, TTS, CLI, ARM, DB, URL, FTS)
+#    Require 2+ chars, exclude common Spanish/English negation words
+_RE_ACRONYM = re.compile(r'\b([A-Z]{2,6})\b')
+# 3. Single capitalized word that looks like a name (2-4+ chars, e.g. "Xavi", "Jack", "Laia")
+#    Exclude common stop words in English AND Spanish to avoid noise
+_RE_CAPITALIZED_SINGLE = re.compile(r'\b([A-Z][a-zA-Z]{1,15})\b')
+_STOPS = {
+    # English
+    'The', 'This', 'That', 'These', 'Those', 'When', 'Where', 'What', 'Which',
+    'With', 'Without', 'Some', 'More', 'Very', 'Just', 'Only', 'Much', 'Such',
+    'Into', 'Upon', 'Over', 'From', 'Each', 'Both', 'All', 'For', 'Not', 'And',
+    'But', 'Our', 'You', 'Are', 'Has', 'Had', 'How', 'Who', 'Why', 'One', 'Two',
+    'New', 'Use', 'End', 'Set', 'Top', 'Any', 'Yet', 'Now', 'After',
+    # Spanish
+    'El', 'La', 'Los', 'Las', 'Un', 'Una', 'Unos', 'Unas', 'Es', 'Son',
+    'Fue', 'Ser', 'Estar', 'Esta', 'Este', 'Ese', 'Esa', 'Aquel', 'Aquella',
+    'Muy', 'Mas', 'Solo', 'Sólo', 'Sino', 'Como', 'Con', 'Sin', 'Por', 'Para',
+    'Entre', 'Hasta', 'Desde', 'Sobre', 'Tras', 'Ante', 'Bajo', 'Durante',
+    'Cada', 'Otro', 'Otra', 'Otros', 'Otras', 'Mismo', 'Misma', 'Poco', 'Poca',
+    'Bien', 'Ya', 'Cuando', 'Donde', 'Quien', 'Cual', 'Que', 'Del', 'Al',
+    'Ha', 'He', 'Han', 'No', 'Si', 'Se', 'Ni', 'O', 'U', 'Todo', 'Toda',
+    'Todos', 'Todas', 'Cual', 'Cuyos', 'Cuyas', 'Cuyo', 'Cuya',
+    'Ven', 'Base', 'Free', 'Host', 'Home', 'Home', 'Id', 'Url',
+    # Generic tech words that shouldn't be entities
+    'No', 'Gateway', 'Agentes', 'Agente', 'Usuario', 'Config',
+}
+# Acronyms that are actually Spanish words in caps (negative filter for acronym extraction)
+_ACRONYM_STOPS = {'NO', 'SI', 'EL', 'LA', 'LOS', 'LAS', 'UN', 'UNA', 'ES', 'EN', 'DE', 'AL', 'YO', 'TU', 'MI', 'SE', 'YA'}
+# Entities that should be normalized (canonical form)
+_ENTITY_ALIASES = {
+    'Usuari Xavi': 'Xavi', 'Usuario Xavi': 'Xavi',
+    'Hermes Memory System V2.0': 'Hermes Memory System v2.0',
+    'Hermes Memory System': 'Hermes Memory System',
+}
+
 _RE_DOUBLE_QUOTE = re.compile(r'"([^"]+)"')
 _RE_SINGLE_QUOTE = re.compile(r"'([^']+)'")
-_RE_AKA          = re.compile(
+_RE_AKA = re.compile(
     r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
     re.IGNORECASE,
 )
@@ -400,23 +436,36 @@ class MemoryStore:
 
         Rules applied (in order):
         1. Capitalized multi-word phrases  e.g. "John Doe"
-        2. Double-quoted terms             e.g. "Python"
-        3. Single-quoted terms             e.g. 'pytest'
-        4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
+        2. Acronyms / ALL-CAPS terms       e.g. OCI, TTS, CLI
+        3. Single capitalized word (name)  e.g. "Xavi", "Jack", "Laia"
+        4. Double-quoted terms             e.g. "Python"
+        5. Single-quoted terms             e.g. 'pytest'
+        6. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
 
-        Returns a deduplicated list preserving first-seen order.
+        Returns a deduplicated list preserving first-seen order, with
+        entity alias normalization applied.
         """
         seen: set[str] = set()
         candidates: list[str] = []
 
         def _add(name: str) -> None:
             stripped = name.strip()
+            # Normalize via alias map
+            stripped = _ENTITY_ALIASES.get(stripped, stripped)
             if stripped and stripped.lower() not in seen:
                 seen.add(stripped.lower())
                 candidates.append(stripped)
 
-        for m in _RE_CAPITALIZED.finditer(text):
+        for m in _RE_CAPITALIZED_MULTI.finditer(text):
             _add(m.group(1))
+
+        for m in _RE_ACRONYM.finditer(text):
+            _add(m.group(1))
+
+        for m in _RE_CAPITALIZED_SINGLE.finditer(text):
+            word = m.group(1)
+            if word not in _STOPS:
+                _add(word)
 
         for m in _RE_DOUBLE_QUOTE.finditer(text):
             _add(m.group(1))

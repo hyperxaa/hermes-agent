@@ -45,6 +45,21 @@ class FactRetriever:
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
 
+    def _bump_retrieval(self, results: list) -> None:
+        """Increment retrieval_count for retrieved facts."""
+        if not results:
+            return
+        conn = self.store._conn
+        ids = [r["fact_id"] for r in results if "fact_id" in r]
+        if ids:
+            conn.execute(
+                "UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ("
+                + ",".join("?" for _ in ids)
+                + ")",
+                ids,
+            )
+            conn.commit()
+
     def search(
         self,
         query: str,
@@ -106,6 +121,7 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
+        self._bump_retrieval(results)
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
@@ -187,7 +203,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._bump_retrieval(results)
+        return results
 
     def related(
         self,
@@ -255,7 +273,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._bump_retrieval(results)
+        return results
 
     def reason(
         self,
@@ -333,7 +353,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._bump_retrieval(results)
+        return results
 
     def contradict(
         self,
@@ -476,7 +498,9 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._bump_retrieval(results)
+        return results
 
     def _fts_candidates(
         self,
