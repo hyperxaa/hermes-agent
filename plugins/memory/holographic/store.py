@@ -340,7 +340,14 @@ class MemoryStore:
             return True
 
     def remove_fact(self, fact_id: int) -> bool:
-        """Delete a fact and its entity links. Returns True if the row existed."""
+        """Delete a fact, its entity links, and orphan entities.
+        
+        After deleting the fact's entity links, removes any entity that
+        is no longer linked to any fact. Keeps the entities table tidy
+        and prevents phantom lookups (entity exists but has no facts).
+        
+        Returns True if the row existed.
+        """
         with self._lock:
             row = self._conn.execute(
                 "SELECT fact_id, category FROM facts WHERE fact_id = ?", (fact_id,)
@@ -348,10 +355,28 @@ class MemoryStore:
             if row is None:
                 return False
 
+            # Get entity IDs that will become orphaned
+            orphaned_ids = self._conn.execute(
+                """
+                SELECT entity_id FROM fact_entities WHERE fact_id = ?
+                AND entity_id NOT IN (
+                    SELECT DISTINCT entity_id FROM fact_entities WHERE fact_id != ?
+                )
+                """,
+                (fact_id, fact_id),
+            ).fetchall()
+
             self._conn.execute(
                 "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
             )
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
+
+            # Clean up orphaned entities
+            for orphan in orphaned_ids:
+                self._conn.execute(
+                    "DELETE FROM entities WHERE entity_id = ?", (orphan["entity_id"],)
+                )
+
             self._conn.commit()
             self._rebuild_bank(row["category"])
             return True

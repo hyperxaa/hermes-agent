@@ -208,9 +208,14 @@ class FactRetriever:
         # First try keyword search (catches partial matches)
         results = self.search(entity, category=category, limit=limit)
 
-        # If nothing found, attempt full HRR probe over all facts
+        # If nothing found, attempt HRR probe only if the entity exists
+        # in the entities table (otherwise it's guaranteed noise).
         if not results and hrr._HAS_NUMPY:
-            results = self._hrr_probe(entity, category, limit)
+            has_entity = conn.execute(
+                "SELECT 1 FROM entities WHERE LOWER(name) = LOWER(?)", (entity,)
+            ).fetchone()
+            if has_entity:
+                results = self._hrr_probe(entity, category, limit)
 
         return results
 
@@ -219,11 +224,15 @@ class FactRetriever:
         entity: str,
         category: str | None,
         limit: int,
+        min_score: float = 0.15,
     ) -> list[dict]:
         """HRR-based entity probe — fallback only.
 
         Scores facts by structural entity presence using HRR algebra.
         Noisy by nature; prefer direct entity lookup via probe().
+        
+        Filters results below min_score to avoid returning random noise
+        when no fact contains the queried entity.
         """
         conn = self.store._conn
 
@@ -259,8 +268,10 @@ class FactRetriever:
             role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
             content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
             sim = hrr.similarity(residual, content_vec)
-            fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
-            scored.append(fact)
+            score = (sim + 1.0) / 2.0 * fact["trust_score"]
+            if score >= min_score:
+                fact["score"] = score
+                scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
