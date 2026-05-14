@@ -58,7 +58,21 @@ class FactRetriever:
                 + ")",
                 ids,
             )
-            conn.commit()
+        conn.commit()
+
+    @staticmethod
+    def _fact_entity_names(conn, fact_id: int) -> list[str]:
+        """Return entity names linked to a fact_id."""
+        rows = conn.execute(
+            """
+            SELECT e.name FROM entities e
+            JOIN fact_entities fe ON fe.entity_id = e.entity_id
+            WHERE fe.fact_id = ?
+            ORDER BY e.name
+            """,
+            (fact_id,),
+        ).fetchall()
+        return [r["name"] for r in rows]
 
     def search(
         self,
@@ -133,41 +147,90 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Compositional entity query using HRR algebra.
+        """Query facts by entity — direct lookup first, HRR fallback.
 
-        Unbinds entity from memory bank to extract associated content.
-        This is NOT keyword search — it uses algebraic structure to find facts
-        where the entity plays a structural role.
+        1. Look up the entity name in the entities table (exact or LIKE match).
+        2. If found, return facts linked via fact_entities, ranked by
+           retrieval_count * trust_score (most-used & most-trusted first).
+        3. If no direct entity match, fall back to FTS5 + HRR scoring.
 
-        Falls back to FTS5 search if numpy unavailable.
+        Results include an "entities" key with linked entity names for
+        downstream consumers that need to know what each fact is about.
         """
-        if not hrr._HAS_NUMPY:
-            # Fallback to keyword search on entity name
-            return self.search(entity, category=category, limit=limit)
-
         conn = self.store._conn
 
-        # Encode entity as role-bound vector
+        # Stage 1: Direct entity lookup in entities table
+        entity_rows = conn.execute(
+            """
+            SELECT fe.fact_id
+            FROM fact_entities fe
+            JOIN entities e ON e.entity_id = fe.entity_id
+            WHERE LOWER(e.name) = LOWER(?)
+            """,
+            (entity,),
+        ).fetchall()
+
+        if entity_rows:
+            # Direct hits — fetch full facts
+            fact_ids = [r["fact_id"] for r in entity_rows]
+            where = "WHERE f.fact_id IN ({})".format(",".join("?" * len(fact_ids)))
+            params: list = list(fact_ids)
+            if category:
+                where += " AND f.category = ?"
+                params.append(category)
+
+            rows = conn.execute(
+                f"""
+                SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
+                       f.retrieval_count, f.helpful_count, f.created_at, f.updated_at,
+                       f.hrr_vector
+                FROM facts f
+                {where}
+                ORDER BY f.retrieval_count * f.trust_score DESC
+                LIMIT ?
+                """,
+                params + [limit],
+            ).fetchall()
+
+            results = []
+            for row in rows:
+                fact = dict(row)
+                fact.pop("hrr_vector", None)
+                fact["entities"] = self._fact_entity_names(conn, fact["fact_id"])
+                # Direct lookup = guaranteed entity match, score = 1.0 × trust
+                fact["score"] = fact["trust_score"]
+                results.append(fact)
+
+            self._bump_retrieval(results)
+            return results
+
+        # Stage 2: No direct entity match — try FTS5 + HRR fallback
+        # First try keyword search (catches partial matches)
+        results = self.search(entity, category=category, limit=limit)
+
+        # If nothing found, attempt full HRR probe over all facts
+        if not results and hrr._HAS_NUMPY:
+            results = self._hrr_probe(entity, category, limit)
+
+        return results
+
+    def _hrr_probe(
+        self,
+        entity: str,
+        category: str | None,
+        limit: int,
+    ) -> list[dict]:
+        """HRR-based entity probe — fallback only.
+
+        Scores facts by structural entity presence using HRR algebra.
+        Noisy by nature; prefer direct entity lookup via probe().
+        """
+        conn = self.store._conn
+
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
         probe_key = hrr.bind(entity_vec, role_entity)
 
-        # Try category-specific bank first, then all facts
-        if category:
-            bank_name = f"cat:{category}"
-            bank_row = conn.execute(
-                "SELECT vector FROM memory_banks WHERE bank_name = ?",
-                (bank_name,),
-            ).fetchone()
-            if bank_row:
-                bank_vec = hrr.bytes_to_phases(bank_row["vector"])
-                extracted = hrr.unbind(bank_vec, probe_key)
-                # Use extracted signal to score individual facts
-                return self._score_facts_by_vector(
-                    extracted, category=category, limit=limit
-                )
-
-        # Score against individual fact vectors directly
         where = "WHERE hrr_vector IS NOT NULL"
         params: list = []
         if category:
@@ -186,16 +249,13 @@ class FactRetriever:
         ).fetchall()
 
         if not rows:
-            # Final fallback: keyword search
-            return self.search(entity, category=category, limit=limit)
+            return []
 
         scored = []
         for row in rows:
             fact = dict(row)
             fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
-            # Unbind probe key from fact to see if entity is structurally present
             residual = hrr.unbind(fact_vec, probe_key)
-            # Compare residual against content signal
             role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
             content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
             sim = hrr.similarity(residual, content_vec)
@@ -283,36 +343,88 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Multi-entity compositional query — vector-space JOIN.
+        """Multi-entity compositional query — relational JOIN over entity table.
 
-        Given multiple entities, algebraically intersects their structural
-        connections to find facts related to ALL of them simultaneously.
-        This is compositional reasoning that no embedding DB can do.
+        Finds facts linked to ALL specified entities simultaneously via the
+        fact_entities relational table. This is structural reasoning: a fact
+        must be bound to every entity to be a match (AND semantics).
 
-        Example: reason(["peppi", "backend"]) finds facts where peppi AND
-        backend both play structural roles — without keyword matching.
+        Scoring: uses trust_score primarily, with HRR vector similarity as
+        a secondary signal to rank within the matched set.
 
-        Falls back to FTS5 search if numpy unavailable.
+        Example: reason(["erik", "OCI"]) finds facts where both erik AND OCI
+        are linked entities.
+
+        Falls back to FTS5 search if numpy unavailable or no exact match.
         """
-        if not hrr._HAS_NUMPY or not entities:
-            # Fallback: search with all entities as keywords
+        if not entities:
             query = " ".join(entities)
             return self.search(query, category=category, limit=limit)
 
         conn = self.store._conn
-        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
 
-        # For each entity, compute what the bank "remembers" about it
-        # by unbinding entity+role from each fact vector
-        entity_residuals = []
+        # Step 1: Relational JOIN — find fact_ids linked to ALL entities
+        # For each entity, get the set of fact_ids it appears in
+        entity_fact_sets: list[set[int]] = []
+        entity_id_map: dict[str, set[int]] = {}
+
         for entity in entities:
-            entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-            probe_key = hrr.bind(entity_vec, role_entity)
-            entity_residuals.append(probe_key)
+            rows = conn.execute(
+                """
+                SELECT e.entity_id, fe.fact_id
+                FROM entities e
+                JOIN fact_entities fe ON fe.entity_id = e.entity_id
+                WHERE e.name = ?
+                """,
+                (entity,),
+            ).fetchall()
+            if not rows:
+                # Entity not found — try case-insensitive match
+                rows = conn.execute(
+                    """
+                    SELECT e.entity_id, fe.fact_id
+                    FROM entities e
+                    JOIN fact_entities fe ON fe.entity_id = e.entity_id
+                    WHERE LOWER(e.name) = LOWER(?)
+                    """,
+                    (entity,),
+                ).fetchall()
 
-        # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
+            entity_fact_sets.append({r["fact_id"] for r in rows})
+            entity_id_map[entity] = {r["entity_id"] for r in rows}
+
+        # Intersection: facts that have ALL entities
+        if not entity_fact_sets or not all(entity_fact_sets):
+            # At least one entity has no facts — fallback to search
+            query = " ".join(entities)
+            return self.search(query, category=category, limit=limit)
+
+        matched_ids = set.intersection(*entity_fact_sets)
+
+        if not matched_ids:
+            # No fact has ALL entities — try partial match (OR) with scoring
+            # This is softer: facts with more entities score higher
+            entity_fact_counts: dict[int, int] = {}
+            for fact_set in entity_fact_sets:
+                for fid in fact_set:
+                    entity_fact_counts[fid] = entity_fact_counts.get(fid, 0) + 1
+
+            # Only consider facts with at least half the entities
+            min_hits = max(1, len(entities) // 2)
+            matched_ids = {
+                fid for fid, count in entity_fact_counts.items()
+                if count >= min_hits
+            }
+
+            if not matched_ids:
+                query = " ".join(entities)
+                return self.search(query, category=category, limit=limit)
+
+        # Step 2: Fetch matched facts with vectors
+        placeholders = ",".join("?" for _ in matched_ids)
+        where = f"WHERE hrr_vector IS NOT NULL AND fact_id IN ({placeholders})"
+        params: list = list(matched_ids)
+
         if category:
             where += " AND category = ?"
             params.append(category)
@@ -332,33 +444,54 @@ class FactRetriever:
             query = " ".join(entities)
             return self.search(query, category=category, limit=limit)
 
-        # Score each fact by how much EACH entity is structurally present.
-        # A fact scores high only if ALL entities have structural presence
-        # (AND semantics via min, vs OR which would use mean/max).
-        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+        # Step 3: Score — primary: trust_score, secondary: HRR content overlap with query
+        if hrr._HAS_NUMPY:
+            query_vec = hrr.encode_text(" ".join(entities), self.hrr_dim)
+            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+            query_with_role = hrr.bind(query_vec, role_content)
 
-        scored = []
-        for row in rows:
-            fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            scored = []
+            for row in rows:
+                fact = dict(row)
+                fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+                # How many of the entities are bound in this fact's vector
+                sim = hrr.similarity(fact_vec, query_with_role)
+                # Count exact entity matches for prioritization
+                matched_entities = []
+                for entity in entities:
+                    eids = entity_id_map.get(entity, set())
+                    if eids:
+                        # Check if any of this entity's IDs are linked to this fact
+                        fact_eids = set(
+                            r[0] for r in conn.execute(
+                                "SELECT entity_id FROM fact_entities WHERE fact_id = ?",
+                                (fact["fact_id"],),
+                            )
+                        )
+                        if isinstance(eids, set) and fact_eids & eids:
+                            matched_entities.append(entity)
 
-            entity_scores = []
-            for probe_key in entity_residuals:
-                residual = hrr.unbind(fact_vec, probe_key)
-                sim = hrr.similarity(residual, role_content)
-                entity_scores.append(sim)
+                fact["entities"] = matched_entities
+                entity_match_ratio = len(matched_entities) / len(entities)
+                fact["score"] = entity_match_ratio * fact["trust_score"]
+                scored.append(fact)
 
-            min_sim = min(entity_scores)
-            fact["score"] = (min_sim + 1.0) / 2.0 * fact["trust_score"]
-            scored.append(fact)
+            scored.sort(key=lambda x: (x["score"], x.get("trust_score", 0)), reverse=True)
+        else:
+            # No numpy — just return by trust_score
+            scored = []
+            for row in rows:
+                fact = dict(row)
+                fact["score"] = fact["trust_score"]
+                scored.append(fact)
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
         self._bump_retrieval(results)
         return results
 
     def contradict(
         self,
+        entity: str | None = None,
         category: str | None = None,
         threshold: float = 0.3,
         limit: int = 10,
@@ -369,6 +502,7 @@ class FactRetriever:
         low content-vector similarity (different claims). This is automated
         memory hygiene — no other memory system does this.
 
+        If 'entity' is specified, only checks facts linked to that entity.
         Returns pairs of facts with a contradiction score.
         Falls back to empty list if numpy unavailable.
         """
@@ -377,19 +511,32 @@ class FactRetriever:
 
         conn = self.store._conn
 
-        # Get all facts with vectors and their linked entities
-        where = "WHERE f.hrr_vector IS NOT NULL"
+        # Build WHERE clause and FROM/JOIN parts
+        joins = ""
+        conditions = ["f.hrr_vector IS NOT NULL"]
         params: list = []
+
+        if entity:
+            joins = """
+                JOIN fact_entities fe2 ON fe2.fact_id = f.fact_id
+                JOIN entities e2 ON e2.entity_id = fe2.entity_id
+            """
+            conditions.append("LOWER(e2.name) = LOWER(?)")
+            params.append(entity)
+
         if category:
-            where += " AND f.category = ?"
+            conditions.append("f.category = ?")
             params.append(category)
+
+        where_clause = " AND ".join(conditions)
 
         rows = conn.execute(
             f"""
             SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
                    f.created_at, f.updated_at, f.hrr_vector
             FROM facts f
-            {where}
+            {joins}
+            WHERE {where_clause}
             """,
             params,
         ).fetchall()
