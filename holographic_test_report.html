@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Informe Tests — Holographic Memory</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --accent: #6c5ce7;
+    --accent-glow: rgba(108,92,231,0.25);
+    --green: #00b894;
+    --green-glow: rgba(0,184,148,0.15);
+    --orange: #f39c12;
+    --red: #e74c3c;
+    --text: #e8e8ef;
+    --muted: #7a7d8c;
+    --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.3rem; margin: 2.5rem 0 1rem; color: var(--accent); }
+  h3 { font-size: 1rem; color: var(--muted); margin-bottom: 0.75rem; font-weight: 500; }
+  code { font-family: var(--mono); font-size: 0.85em; }
+
+  /* Header */
+  .header { text-align: center; padding: 2rem 0 3rem; position: relative; }
+  .header::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80px;
+    height: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 20px var(--accent-glow);
+  }
+  .header .subtitle { color: var(--muted); font-size: 0.95rem; margin-top: 0.5rem; }
+  .header .badge {
+    display: inline-block;
+    background: var(--green);
+    color: #fff;
+    font-weight: 700;
+    padding: 0.3rem 1rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    margin-top: 1rem;
+    box-shadow: 0 0 25px var(--green-glow);
+  }
+
+  /* KPI Cards */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1rem;
+    margin: 2rem 0;
+  }
+  .kpi {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    text-align: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .kpi:hover { transform: translateY(-2px); box-shadow: 0 6px 25px rgba(0,0,0,0.3); }
+  .kpi .value { font-size: 2.2rem; font-weight: 700; margin-bottom: 0.25rem; }
+  .kpi .label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .kpi.green .value { color: var(--green); }
+  .kpi.accent .value { color: var(--accent); }
+  .kpi.orange .value { color: var(--orange); }
+
+  /* Bar chart per-file */
+  .bar-chart { margin: 1rem 0 2rem; }
+  .bar-row {
+    display: grid;
+    grid-template-columns: 260px 1fr 60px;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+  }
+  .bar-row .file-name {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bar-track {
+    background: #252836;
+    border-radius: 6px;
+    height: 28px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    position: relative;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 6px;
+    background: linear-gradient(90deg, var(--accent), #a29bfe);
+    transition: width 0.6s ease;
+    display: flex;
+    align-items: center;
+    padding-left: 0.5rem;
+  }
+  .bar-fill small { font-size: 0.7rem; color: rgba(255,255,255,0.8); font-weight: 600; }
+  .bar-count {
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-align: right;
+  }
+
+  /* Coverage by module */
+  .module-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0 2rem;
+  }
+  .module-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+  }
+  .module-card .module-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+  .module-card .module-title { font-weight: 600; font-size: 0.95rem; }
+  .module-card .module-count { color: var(--accent); font-weight: 700; }
+  .module-card ul { list-style: none; }
+  .module-card li {
+    font-size: 0.78rem;
+    color: var(--muted);
+    padding: 0.25rem 0;
+    border-bottom: 1px solid #222432;
+  }
+  .module-card li:last-child { border-bottom: none; }
+  .module-card li::before {
+    content: '✅ ';
+    font-size: 0.7rem;
+  }
+
+  /* Bug callout */
+  .bug-callout {
+    background: rgba(243,156,18,0.08);
+    border: 1px solid rgba(243,156,18,0.25);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin: 2rem 0;
+  }
+  .bug-callout .bug-title {
+    color: var(--orange);
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 0.5rem;
+  }
+  .bug-callout .diff {
+    background: #1a1500;
+    border: 1px solid #333000;
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.8;
+    overflow-x: auto;
+  }
+  .diff .del { color: var(--red); }
+  .diff .add { color: var(--green); }
+
+  /* Tech info */
+  .tech-table {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 1rem 0 2rem;
+  }
+  .tech-row {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    border-bottom: 1px solid var(--border);
+  }
+  .tech-row:last-child { border-bottom: none; }
+  .tech-key {
+    background: #222432;
+    padding: 0.75rem 1rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .tech-val {
+    padding: 0.75rem 1rem;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+  }
+
+  .cmd-block {
+    background: #141620;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--green);
+    margin: 0.5rem 0 2rem;
+    overflow-x: auto;
+    user-select: all;
+  }
+
+  .footer { text-align: center; padding: 2rem 0; color: var(--muted); font-size: 0.8rem; }
+
+  @media (max-width: 640px) {
+    body { padding: 1rem; }
+    .bar-row { grid-template-columns: 1fr; gap: 0.3rem; }
+    .bar-row .file-name { text-align: left; font-size: 0.72rem; }
+    .tech-row { grid-template-columns: 1fr; }
+    .tech-key { padding-bottom: 0; border-bottom: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🧠 Holographic Memory</h1>
+  <div class="subtitle">Informe de Tests Unitarios — Plugin de Memoria para Hermes Agent</div>
+  <div class="badge">✅ 182 PASSED — 0 FAILED — 10.56 s</div>
+</div>
+
+<!-- KPIs -->
+<div class="kpi-row">
+  <div class="kpi accent">
+    <div class="value">182</div>
+    <div class="label">Tests ejecutados</div>
+  </div>
+  <div class="kpi green">
+    <div class="value">100%</div>
+    <div class="label">Tasa de éxito</div>
+  </div>
+  <div class="kpi green">
+    <div class="value">10.56s</div>
+    <div class="label">Tiempo total</div>
+  </div>
+  <div class="kpi">
+    <div class="value">13</div>
+    <div class="label">Archivos test</div>
+  </div>
+  <div class="kpi orange">
+    <div class="value">1</div>
+    <div class="label">Bugs encontrados y corregidos</div>
+  </div>
+</div>
+
+<h2>📊 Tests por archivo</h2>
+<div class="bar-chart">
+
+  <div class="bar-row">
+    <div class="file-name">test_store_crud.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:100%"><small>CRUD completo</small></div></div>
+    <div class="bar-count">39</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_provider_lifecycle.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:83%"><small>Provider lifecycle</small></div></div>
+    <div class="bar-count">32</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_hrr_encoding.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:41%"><small>HRR encoding</small></div></div>
+    <div class="bar-count">15</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_retriever_search.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:41%"><small>Search semántico</small></div></div>
+    <div class="bar-count">15</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_store_entities.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:38%"><small>Extracción entidades</small></div></div>
+    <div class="bar-count">14</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_hrr_algebra.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:36%"><small>HRR algebra</small></div></div>
+    <div class="bar-count">13</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_retriever_fallback.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:33%"><small>Fallback sin numpy</small></div></div>
+    <div class="bar-count">12</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_retriever_hrr.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:33%"><small>HRR retriever</small></div></div>
+    <div class="bar-count">12</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_provider_integration.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:22%"><small>Integración E2E</small></div></div>
+    <div class="bar-count">8</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_store_banks.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:19%"><small>Vector banks</small></div></div>
+    <div class="bar-count">7</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_retriever_fts.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:16%"><small>FTS full-text</small></div></div>
+    <div class="bar-count">6</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_store_fts.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:14%"><small>FTS sync</small></div></div>
+    <div class="bar-count">5</div>
+  </div>
+  <div class="bar-row">
+    <div class="file-name">test_norun_paths.py</div>
+    <div class="bar-track"><div class="bar-fill" style="width:11%"><small>No-numpy paths</small></div></div>
+    <div class="bar-count">4</div>
+  </div>
+</div>
+
+<h2>🧩 Cobertura por módulo</h2>
+<div class="module-grid">
+
+  <div class="module-card">
+    <div class="module-header">
+      <div class="module-title">🔧 Store (CRUD)</div>
+      <div class="module-count">39 tests</div>
+    </div>
+    <ul>
+      <li>Add/Update/Remove facts</li>
+      <li>Deduplicación por contenido</li>
+      <li>Trust score (delta, clamp 0–1)</li>
+      <li>Categorías y tags</li>
+      <li>List/filtrado con min_trust</li>
+      <li>Search FTS básico</li>
+      <li>Record feedback (helpful/unhelpful)</li>
+      <li>Thread safety + WAL mode</li>
+    </ul>
+  </div>
+
+  <div class="module-card">
+    <div class="module-header">
+      <div class="module-title">🏷️ Store (Entities)</div>
+      <div class="module-count">14 tests</div>
+    </div>
+    <ul>
+      <li>Múltiples entidades extractables</li>
+      <li>Acrónimos y stop words ("El", "Si", "No")</li>
+      <li>Entidades entre comillas simples/dobles</li>
+      <li>Patrón alias (aka pattern)</li>
+      <li>Normalización de nombres</li>
+      <li>IDs reutilizados entre facts</li>
+      <li>Ignora "GATEWAY" como entidad</li>
+    </ul>
+  </div>
+
+  <div class="module-card">
+    <div class="module-header">
+      <div class="module-title">🏦 Store (Banks + FTS)</div>
+      <div class="module-count">12 tests</div>
+    </div>
+    <ul>
+      <li>Bank creado en add fact</li>
+      <li>Bank rebuild en update/delete</li>
+      <li>Bancos separados por categoría</li>
+      <li>Dimensión de vector</li>
+      <li>Sync FTS en insert/update/delete</li>
+      <li>Match por tags</li>
+      <li>Rebuild tras operación bulk</li>
+    </ul>
+  </div>
+
+  <div class="module-card">
+    <div class="module-header">
+      <div class="module-title">🔎 Retriever (Search + HRR)</div>
+      <div class="module-count">27 tests</div>
+    </div>
+    <ul>
+      <li>Search semántico con scores, limit, filtros</li>
+      <li>Decay temporal en scoring</li>
+      <li>Probe / Related / Reason / Contradict</li>
+      <li>Similitud HRR con threshold</li>
+      <li>Expansión de candidatos limitada</li>
+      <li>Fallback search cuando HRR no tiene peso</li>
+    </ul>
+  </div>
+
+  <div class="module-card">
+    <div class="module-header">
+      <div class="module-title">📡 Retriever (FTS + Fallback)</div>
+      <div class="module-count">18 tests</div>
+    </div>
+    <ul>
+      <li>FTS: or semantics, sanitización, rank</li>
+      <li>FTS: chars especiales, fallback raw</li>
+      <li>Fallback probe/related/reason → search</li>
+      <li>Contradict retorna vacío</li>
+      <li>Add fact sin numpy funciona</li>
+      <li>Encode/Bind/Similarity raises sin numpy</li>
+    </ul>
+  </div>
+
+  <div class="module-card">
+    <div class="module-header">
+      <div class="module-title">🧠 Provider (Lifecycle + E2E)</div>
+      <div class="module-count">40 tests</div>
+    </div>
+    <ul>
+      <li>Initialize, shutdown, prefetch</li>
+      <li>Tool schemas y dispatch</li>
+      <li>Handle tools: add/search/probe/related/reason/contradict/update/remove/list</li>
+      <li>Feedback helpful/unhelpful</li>
+      <li>on_memory_write (user + memory targets)</li>
+      <li>E2E: full ciclo + mirror</li>
+      <li>Config schema + save YAML</li>
+    </ul>
+  </div>
+
+  <div class="module-card" style="grid-column: 1 / -1;">
+    <div class="module-header">
+      <div class="module-title">⚗️ HRR (Algebra + Encoding)</div>
+      <div class="module-count">28 tests</div>
+    </div>
+    <ul>
+      <li>Encode atom: determinismo, rangos de fase, dimensión</li>
+      <li>Bind/Unbind: roundtrip, conmutatividad</li>
+      <li>Bundle: similitud con inputs, multi-sim</li>
+      <li>Similaridad: autoperfecta, ortogonal ~0, rango [0,1]</li>
+      <li>Dimension scaling, cuasi-ortogonalidad</li>
+      <li>Encode text: tokens, puntuación, case-insensitive</li>
+      <li>Encode fact: entidades, serialización, SNR</li>
+      <li>Extracción algebraica estable (sim > 0 < 1)</li>
+    </ul>
+  </div>
+</div>
+
+<h2>🐛 Bug encontrado y corregido</h2>
+<div class="bug-callout">
+  <div class="bug-title">⚠️ _ACRONYM_STOPS definido pero no aplicado en _extract_entities</div>
+  <p style="font-size:0.85rem; color:var(--muted); margin-bottom:0.75rem;">
+    El filtro <code>_ACRONYM_STOPS</code> (contiene "EL", "SI", "NO") se definía en el módulo pero <strong>nunca se usaba</strong> en el bucle de extracción de entidades capitalizadas. Resultado: "El perro" → extraía "El" como entidad. El test unitario lo cazó.
+  </p>
+  <div class="diff">
+    <span class="del">-     if word not in _STOPS:</span><br>
+    <span class="add">+     if word not in _STOPS and word.upper() not in _ACRONYM_STOPS:</span>
+  </div>
+</div>
+
+<h2>🛠️ Info técnica</h2>
+<div class="tech-table">
+  <div class="tech-row">
+    <div class="tech-key">Ruta tests</div>
+    <div class="tech-val">plugins/memory/holographic/tests/</div>
+  </div>
+  <div class="tech-row">
+    <div class="tech-key">Comando</div>
+    <div class="tech-val">pytest plugins/memory/holographic/tests/ -xvs -o "addopts="</div>
+  </div>
+  <div class="tech-row">
+    <div class="tech-key">Python</div>
+    <div class="tech-val">3.11.15 (pyproject root)</div>
+  </div>
+  <div class="tech-row">
+    <div class="tech-key">pytest</div>
+    <div class="tech-val">9.0.3 + anyio 4.12.1</div>
+  </div>
+  <div class="tech-row">
+    <div class="tech-key">Dependencias</div>
+    <div class="tech-val">numpy + sqlite3 FTS5 (sin API LLM)</div>
+  </div>
+  <div class="tech-row">
+    <div class="tech-key">Bug fix</div>
+    <div class="tech-val">store.py line ~468 (acrónimos stop words)</div>
+  </div>
+  <div class="tech-row">
+    <div class="tech-key">Informe CLI</div>
+    <div class="tech-val">~/holographic_test_report.txt</div>
+  </div>
+  <div class="tech-row">
+    <div class="tech-key">Fecha</div>
+    <div class="tech-val">2026-05-13 23:17 CET</div>
+  </div>
+</div>
+
+<div class="cmd-block">cd /home/ubuntu/.hermes/hermes-agent && source .venv/bin/activate
+pytest plugins/memory/holographic/tests/ -v --tb=short -o "addopts="</div>
+
+<div class="footer">Generado automáticamente · 182 tests · 0 fallos · 10.56s</div>
+</body>
+</html>
